@@ -211,6 +211,25 @@ CI (`.github/workflows/ci.yml`) runs the test suite on every push and builds the
 production image; pushes to `main` also publish it to GitHub Container Registry
 as `ghcr.io/<owner>/<repo>:latest` and `:sha-<commit>`.
 
+### Continuous deployment
+
+With repository secrets in place, a green `main` build also rolls out to a server
+over SSH:
+
+| Secret | Purpose |
+| --- | --- |
+| `DEPLOY_HOST` | Server address. Without it the deploy job reports and skips, so main never goes red for an unconfigured repo |
+| `DEPLOY_USER` | SSH user |
+| `DEPLOY_SSH_KEY` | Private key whose public half is in that user's `authorized_keys` |
+| `DEPLOY_PATH` | Directory on the server holding this repo's `docker-compose.yml` and its `.env` |
+| `DEPLOY_PORT` | Optional SSH port, default 22 |
+
+The job exports `IMAGE_TAG=sha-<commit>`, pulls that tag for the `api` service,
+runs `npm run migrate` inside it, restarts the service with `--no-build`, then
+polls `/health` for a minute and prints container logs if it never turns
+healthy. The server keeps its own `.env`; the workflow only supplies the image
+tag, never the secrets.
+
 Multi-stage `Dockerfile` (non-root, tini init, healthcheck). Set
 `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` — production refuses to boot with
 missing, placeholder or short (<32 char) secrets, and refuses to boot without a

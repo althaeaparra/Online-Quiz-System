@@ -78,3 +78,78 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [test, docker]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      # The deploy job is optional: without DEPLOY_HOST it reports and skips, so
+      # a repository that only builds is never left with a red main.
+      - name: Check deploy configuration
+        id: config
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          if [ -z "$DEPLOY_HOST" ]; then
+            echo "::notice title=Deploy skipped::DEPLOY_HOST is not configured for this repository."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install deploy key
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || 22 }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      # Pulls the image this run just published, applies migrations with it, then
+      # switches the service over and waits for /health. The server keeps its own
+      # .env; this job only supplies the image tag.
+      - name: Roll out over SSH
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || 22 }}
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" -o BatchMode=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH='$DEPLOY_PATH' IMAGE_TAG='$IMAGE_TAG' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "${DEPLOY_PATH:?DEPLOY_PATH is not set}"
+          echo "Deploying $IMAGE_TAG"
+
+          docker compose pull api
+          docker compose run --rm --no-deps api npm run migrate
+          docker compose up -d --no-build --remove-orphans
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${HEALTH_PORT:-5000}/health" >/dev/null; then
+              echo "Health check passed after $attempt attempt(s)"
+              docker image prune -f --filter 'until=168h' >/dev/null || true
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Health check failed — recent logs:"
+          docker compose logs --tail=60 api || true
+          exit 1
+          REMOTE

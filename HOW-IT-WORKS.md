@@ -431,6 +431,25 @@ The container runs as a non-root user with `tini` as PID 1, declares a
 localhost, so it sets `COOKIE_SECURE=false`; set `COOKIE_SECURE=true` in `.env`
 once TLS terminates in front of it.
 
+### Continuous delivery
+
+`.github/workflows/ci.yml` publishes `sha-<commit>` and `latest` images on every
+push to `main`. When the repository has `DEPLOY_HOST`, `DEPLOY_USER`,
+`DEPLOY_SSH_KEY` and `DEPLOY_PATH` configured, a green `main` build then runs this
+on the server, inside `DEPLOY_PATH`:
+
+```bash
+docker compose pull api
+docker compose run --rm --no-deps api npm run migrate
+docker compose up -d --no-build --remove-orphans
+# then polls http://127.0.0.1:5000/health for 60s
+```
+
+So the server owns its `docker-compose.yml` and `.env`; CI only decides which
+image tag runs. Migrations happen in the new image before the swap, and a
+failing health check prints the last 60 log lines and fails the run. Without
+`DEPLOY_HOST` the job exits after logging that deployment is skipped.
+
 ### Any Node host
 
 ```bash

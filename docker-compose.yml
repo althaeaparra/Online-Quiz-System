@@ -1,5 +1,8 @@
 services:
   api:
+    # Local `docker compose up --build` builds and tags this name; a server can
+    # instead `docker compose pull api` a tag published by CI.
+    image: ${IMAGE_REPO:-ghcr.io/althaeaparra/online-quiz-system}:${IMAGE_TAG:-latest}
     build: .
     container_name: citebraincheck-api
     restart: unless-stopped
