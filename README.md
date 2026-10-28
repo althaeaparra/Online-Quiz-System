@@ -74,6 +74,42 @@ or set `SHOW_ADMIN_LINK=true` to show an **Admin** button on the landing page
 A deployment-oriented explanation of the runtime, auth, enrollment, grading
 and live-session internals lives in **[HOW-IT-WORKS.md](HOW-IT-WORKS.md)**.
 
+### Running from VS Code
+
+The repo ships `.vscode/tasks.json` and `.vscode/launch.json`, so nothing has to
+be configured by hand. Open the project folder, then use **Terminal → Run
+Task…** or the **Run and Debug** panel.
+
+| Task | What it does |
+| --- | --- |
+| `Install dependencies` | `npm ci` (clean install from the lockfile) |
+| `Run tests` | `npm test` — also the default *test* task |
+| `Run tests with coverage` | `npm run test:coverage` |
+| `Start API (dev, watch)` | `npm run dev`, default **build** task (Ctrl/Cmd+Shift+B) |
+| `Start API (demo data)` | In-memory MongoDB + seeded demo cohort |
+| `Start API (production mode)` | `npm start`, uses your real `.env` |
+| `Apply migrations` | `npm run migrate` |
+| `Create administrator` | Prompts for email/password/name, then runs `npm run create-admin` |
+| `Housekeeping cleanup` | `npm run cleanup` |
+| `Docker: compose up (build)` | Build and start the container stack in the background |
+| `Docker: compose logs` | Follow the `api` container logs |
+| `Docker: compose down` | Stop the stack |
+
+Debugging (F5, breakpoints, watch-restart):
+
+* **API: dev (watch)** — the normal server under `node --watch`, restarted on
+  save, with the debugger attached to the child process.
+* **API: dev (no watch)** — a plain launch of `server.js`.
+* **API: demo data (in-memory MongoDB)** — same, but ephemeral DB + demo seed,
+  so F5 works on a machine with no database installed.
+* **Jest: current test file** — runs the file open in the editor under the
+  debugger (`--runInBand`), after setting `NODE_OPTIONS=--experimental-vm-modules`.
+* **Jest: all tests** — the whole suite, same way.
+
+The `Create administrator` task passes the prompted password as a CLI argument,
+so it appears in that terminal's command line; prefer `ADMIN_PASSWORD` in the
+environment on a shared machine.
+
 ## Architecture
 
 ```

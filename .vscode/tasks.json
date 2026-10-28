@@ -1,0 +1,106 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Install dependencies",
+      "type": "shell",
+      "command": "npm ci",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run tests",
+      "type": "shell",
+      "command": "npm test",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run tests with coverage",
+      "type": "shell",
+      "command": "npm run test:coverage",
+      "problemMatcher": []
+    },
+    {
+      "label": "Start API (dev, watch)",
+      "detail": "node --watch server.js on PORT from .env (default 5000)",
+      "type": "shell",
+      "command": "npm run dev",
+      "group": { "kind": "build", "isDefault": true },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Start API (demo data)",
+      "detail": "In-memory MongoDB + seeded demo cohort, no external services",
+      "type": "shell",
+      "command": "npm run dev:demo",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Start API (production mode)",
+      "detail": "Uses your real environment; requires MONGO_URI and 32+ character JWT secrets",
+      "type": "shell",
+      "command": "npm start",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Apply migrations",
+      "type": "shell",
+      "command": "npm run migrate",
+      "problemMatcher": []
+    },
+    {
+      "label": "Create administrator",
+      "detail": "Prompts for the email and password of the first admin account",
+      "type": "shell",
+      "command": "npm run create-admin -- --email ${input:adminEmail} --password ${input:adminPassword} --name \"${input:adminName}\"",
+      "problemMatcher": []
+    },
+    {
+      "label": "Housekeeping cleanup",
+      "type": "shell",
+      "command": "npm run cleanup",
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker: compose up (build)",
+      "type": "shell",
+      "command": "docker compose up --build -d",
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker: compose logs",
+      "type": "shell",
+      "command": "docker compose logs -f api",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker: compose down",
+      "type": "shell",
+      "command": "docker compose down",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "adminEmail",
+      "type": "promptString",
+      "description": "Administrator email (e.g. head@cite.edu)"
+    },
+    {
+      "id": "adminPassword",
+      "type": "promptString",
+      "description": "Administrator password (8+ characters)",
+      "password": true
+    },
+    {
+      "id": "adminName",
+      "type": "promptString",
+      "description": "Administrator display name",
+      "default": "CITE Administrator"
+    }
+  ]
+}
