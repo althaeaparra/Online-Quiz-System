@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.local
+logs/
+coverage/
+public/uploads/*
+!public/uploads/.gitkeep
+.DS_Store
+npm-debug.log*
+*.pem
+
+# Freebuff workspace metadata (never part of the project)
+.freebuff/
