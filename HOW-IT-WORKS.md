@@ -450,6 +450,15 @@ image tag runs. Migrations happen in the new image before the swap, and a
 failing health check prints the last 60 log lines and fails the run. Without
 `DEPLOY_HOST` the job exits after logging that deployment is skipped.
 
+Once a deploy has run, a `smoke` job verifies the result from outside the
+server, using the `SMOKE_URL` repository variable: `/health` must report `ok`,
+`/api/quizzes` must return the catalogue envelope, and — when
+`SMOKE_EMAIL`/`SMOKE_PASSWORD` are set — a student sign-in must issue a session
+cookie that `/api/auth/me` accepts, after which the smoke session is logged out.
+That catches what a container health check cannot see: TLS, reverse-proxy
+routing and broken sign-in. The smoke credentials count toward the normal
+5-attempt lockout, so give the job its own student account.
+
 `.github/workflows/rollback.yml` is the manual counterpart: it resolves the
 previous *published* image (walking the branch's commits and keeping only those
 with a `sha-<commit>` tag in the registry), or takes an explicit tag, then pulls

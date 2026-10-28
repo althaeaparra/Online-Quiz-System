@@ -243,6 +243,22 @@ so the previous image runs against the schema it already expects), waits on
 not moved, so the next green `main` deploy returns the service to the newest
 image.
 
+#### Post-deploy smoke test
+
+After a deploy that ran, a `smoke` job checks the live site from the outside:
+
+* `GET /health` returns `200` with `data.status: "ok"`,
+* `GET /api/quizzes?limit=3` returns the catalogue envelope with a quiz array,
+* with `SMOKE_EMAIL`/`SMOKE_PASSWORD` set, it signs in through
+  `/api/auth/login` as a student, confirms a session cookie was issued by
+  calling `/api/auth/me`, and signs out again.
+
+Configure the URL as a repository **variable** (`SMOKE_URL`, e.g.
+`https://braincheck.cite.edu`) and the account as **secrets**. Without
+`SMOKE_URL` the job reports and skips; without credentials it still validates
+health and the catalogue. Use a dedicated student account: failed attempts count
+toward the normal 5-try lockout.
+
 Multi-stage `Dockerfile` (non-root, tini init, healthcheck). Set
 `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` — production refuses to boot with
 missing, placeholder or short (<32 char) secrets, and refuses to boot without a

@@ -90,6 +90,8 @@ jobs:
     concurrency:
       group: deploy-production
       cancel-in-progress: false
+    outputs:
+      deployed: ${{ steps.config.outputs.enabled }}
 
     steps:
       # The deploy job is optional: without DEPLOY_HOST it reports and skips, so
@@ -154,3 +156,131 @@ jobs:
           docker compose logs --tail=60 api || true
           exit 1
           REMOTE
+
+  smoke:
+    name: Smoke test production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: deploy
+    # Only after a deploy that actually ran, so an unconfigured repo stays green.
+    if: github.ref == 'refs/heads/main' && needs.deploy.outputs.deployed == 'true'
+    environment: production
+
+    steps:
+      - name: Check smoke configuration
+        id: config
+        env:
+          SMOKE_URL: ${{ vars.SMOKE_URL }}
+        run: |
+          if [ -z "$SMOKE_URL" ]; then
+            echo "::notice title=Smoke test skipped::SMOKE_URL is not configured for this repository."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Health endpoint
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          SMOKE_URL: ${{ vars.SMOKE_URL }}
+        run: |
+          set -euo pipefail
+          base="${SMOKE_URL%/}"
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+
+          code=$(curl -sS --max-time 20 -o "$workdir/health.json" -w '%{http_code}' "$base/health" || true)
+          if [ "$code" != "200" ]; then
+            echo "::error::GET $base/health returned ${code:-no response}"
+            cat "$workdir/health.json" 2>/dev/null || true
+            exit 1
+          fi
+          HEALTH_FILE="$workdir/health.json" node -e '
+            const raw = require("fs").readFileSync(process.env.HEALTH_FILE, "utf8");
+            const health = JSON.parse(raw);
+            if (health.success !== true || health.data?.status !== "ok") {
+              console.error("unexpected health payload:", raw);
+              process.exit(1);
+            }
+            console.log("health: ok, database", health.data.database);
+          '
+
+      - name: Quiz catalogue
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          SMOKE_URL: ${{ vars.SMOKE_URL }}
+        run: |
+          set -euo pipefail
+          base="${SMOKE_URL%/}"
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+
+          code=$(curl -sS --max-time 20 -o "$workdir/quizzes.json" -w '%{http_code}' "$base/api/quizzes?limit=3" || true)
+          if [ "$code" != "200" ]; then
+            echo "::error::GET $base/api/quizzes returned ${code:-no response}"
+            cat "$workdir/quizzes.json" 2>/dev/null || true
+            exit 1
+          fi
+          QUIZ_FILE="$workdir/quizzes.json" node -e '
+            const raw = require("fs").readFileSync(process.env.QUIZ_FILE, "utf8");
+            const catalogue = JSON.parse(raw);
+            if (catalogue.success !== true || !Array.isArray(catalogue.data)) {
+              console.error("unexpected catalogue payload:", raw.slice(0, 300));
+              process.exit(1);
+            }
+            console.log(`catalogue: ${catalogue.data.length} quiz(zes) on the first page`);
+          '
+
+      # Uses a dedicated student account (SMOKE_EMAIL/SMOKE_PASSWORD) rather than
+      # an admin, then signs out so the run leaves no live session behind.
+      - name: Sign in and verify session
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          SMOKE_URL: ${{ vars.SMOKE_URL }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SMOKE_EMAIL:-}" ] || [ -z "${SMOKE_PASSWORD:-}" ]; then
+            echo "::notice title=Sign-in check skipped::SMOKE_EMAIL/SMOKE_PASSWORD are not configured."
+            exit 0
+          fi
+
+          base="${SMOKE_URL%/}"
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+          jar="$workdir/cookies.txt"
+
+          node -e 'process.stdout.write(JSON.stringify({ identifier: process.env.SMOKE_EMAIL, password: process.env.SMOKE_PASSWORD, expectedRole: "student" }))' > "$workdir/login-request.json"
+
+          code=$(curl -sS --max-time 20 -c "$jar" -o "$workdir/login.json" -w '%{http_code}' \
+            -H 'Content-Type: application/json' --data @"$workdir/login-request.json" \
+            "$base/api/auth/login" || true)
+          if [ "$code" != "200" ]; then
+            echo "::error::POST $base/api/auth/login returned ${code:-no response}"
+            cat "$workdir/login.json" 2>/dev/null || true
+            exit 1
+          fi
+          if ! grep -q 'qf_access' "$jar"; then
+            echo "::error::Sign-in did not set a session cookie"
+            exit 1
+          fi
+
+          code=$(curl -sS --max-time 20 -b "$jar" -o "$workdir/me.json" -w '%{http_code}' "$base/api/auth/me" || true)
+          if [ "$code" != "200" ]; then
+            echo "::error::GET $base/api/auth/me returned ${code:-no response} after sign-in"
+            cat "$workdir/me.json" 2>/dev/null || true
+            exit 1
+          fi
+          ME_FILE="$workdir/me.json" node -e '
+            const raw = require("fs").readFileSync(process.env.ME_FILE, "utf8");
+            const me = JSON.parse(raw);
+            if (me.success !== true || !me.data?.email) {
+              console.error("unexpected session payload:", raw.slice(0, 300));
+              process.exit(1);
+            }
+            console.log(`session: signed in as ${me.data.email} (${me.data.role})`);
+          '
+
+          curl -sS --max-time 20 -b "$jar" -X POST "$base/api/auth/logout" -o /dev/null || true
+          echo "sign-in: ok (session closed)"
