@@ -64,7 +64,8 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          # Same repository override the rollback workflow resolves tags from.
+          images: ${{ vars.IMAGE_REPO || format('ghcr.io/{0}', github.repository) }}
           tags: |
             type=sha,format=long
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}

@@ -230,6 +230,19 @@ polls `/health` for a minute and prints container logs if it never turns
 healthy. The server keeps its own `.env`; the workflow only supplies the image
 tag, never the secrets.
 
+#### Rolling back
+
+`.github/workflows/rollback.yml` is manual — run **Rollback** from the Actions
+tab and fill in why. Leave the tag blank and CI walks the branch's commits,
+keeping those that actually have a published `sha-<commit>` image, then deploys
+the one before the current build; or name a tag such as `sha-<commit>` directly.
+
+It shares the deploy concurrency lock, skips migrations (they are forward-only,
+so the previous image runs against the schema it already expects), waits on
+`/health`, and records the tag, actor and reason in the run summary. `latest` is
+not moved, so the next green `main` deploy returns the service to the newest
+image.
+
 Multi-stage `Dockerfile` (non-root, tini init, healthcheck). Set
 `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` — production refuses to boot with
 missing, placeholder or short (<32 char) secrets, and refuses to boot without a

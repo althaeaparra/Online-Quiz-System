@@ -450,6 +450,14 @@ image tag runs. Migrations happen in the new image before the swap, and a
 failing health check prints the last 60 log lines and fails the run. Without
 `DEPLOY_HOST` the job exits after logging that deployment is skipped.
 
+`.github/workflows/rollback.yml` is the manual counterpart: it resolves the
+previous *published* image (walking the branch's commits and keeping only those
+with a `sha-<commit>` tag in the registry), or takes an explicit tag, then pulls
+and restarts the service while sharing the `deploy-production` lock. It
+intentionally skips migrations — they are forward-only, so the older image is
+paired with the schema it already expects — and leaves `latest` untouched, so
+the next green `main` build moves the service forward again.
+
 ### Any Node host
 
 ```bash

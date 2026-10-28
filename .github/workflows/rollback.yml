@@ -1,0 +1,180 @@
+name: Rollback
+
+# Manual only: redeploy an image that was already published, either the one
+# before the current build or a tag you name explicitly.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to deploy. Leave blank to use the previously published image.'
+        required: false
+        type: string
+      reason:
+        description: 'Why this rollback is happening (recorded in the run summary).'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Share the lock with the deploy job so a rollback and a release can never run
+# against the server at the same time.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Roll back production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+
+    steps:
+      - name: Check deploy configuration
+        id: config
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          if [ -z "$DEPLOY_HOST" ]; then
+            echo "::notice title=Rollback skipped::DEPLOY_HOST is not configured for this repository."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.config.outputs.enabled == 'true'
+        with:
+          fetch-depth: 0
+
+      # Walks the branch's commits and keeps the ones that actually have a
+      # published sha-<commit> image, so "previous" means the last image CI
+      # really shipped — not merely the parent commit.
+      - name: Resolve image tag
+        id: resolve
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          IMAGE_REPO: ${{ vars.IMAGE_REPO || format('ghcr.io/{0}', github.repository) }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          repo="$(printf '%s' "${IMAGE_REPO#ghcr.io/}" | tr '[:upper:]' '[:lower:]')"
+          token="$(curl -fsS "https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io" | jq -r .token)"
+          published="$(curl -fsS -H "Authorization: Bearer ${token}" "https://ghcr.io/v2/${repo}/tags/list" | jq -r '.tags[]?' | grep -E '^sha-[0-9a-f]{40}$' || true)"
+
+          validate_tag() {
+            case "$1" in
+              latest) return 0 ;;
+            esac
+            printf '%s' "$1" | grep -qE '^sha-[0-9a-f]{40}$'
+          }
+
+          if [ -n "${REQUESTED_TAG}" ]; then
+            tag="${REQUESTED_TAG}"
+            if ! validate_tag "${tag}"; then
+              echo "::error::Unsupported tag. Use latest or sha-<40-character commit>."
+              exit 1
+            fi
+            if [ "${tag}" != "latest" ] && ! printf '%s\n' "${published}" | grep -qx "${tag}"; then
+              echo "::error::${tag} is not published in ${repo}."
+              exit 1
+            fi
+          else
+            ordered=()
+            for sha in $(git log --format=%H -n 200); do
+              if printf '%s\n' "${published}" | grep -qx "sha-${sha}"; then
+                ordered+=("sha-${sha}")
+              fi
+            done
+
+            if [ "${#ordered[@]}" -eq 0 ]; then
+              echo "::error::No published image matches this branch's commits — pass a tag explicitly."
+              exit 1
+            fi
+
+            if [ "${ordered[0]}" = "sha-${HEAD_SHA}" ]; then
+              if [ "${#ordered[@]}" -lt 2 ]; then
+                echo "::error::Only one image has been published; there is nothing to roll back to."
+                exit 1
+              fi
+              tag="${ordered[1]}"
+            else
+              # HEAD has no published image yet, so the newest one is the target.
+              tag="${ordered[0]}"
+            fi
+          fi
+
+          if ! validate_tag "${tag}"; then
+            echo "::error::Resolved an unexpected tag; refusing to deploy it."
+            exit 1
+          fi
+
+          echo "Rolling back to ${tag} (branch head sha-${HEAD_SHA})"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Install deploy key
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || 22 }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Roll out over SSH
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || 22 }}
+          IMAGE_TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" -o BatchMode=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH='$DEPLOY_PATH' IMAGE_TAG='$IMAGE_TAG' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "${DEPLOY_PATH:?DEPLOY_PATH is not set}"
+          echo "Rolling back to $IMAGE_TAG"
+
+          docker compose pull api
+          # Migrations are forward-only and belong to the release being replaced,
+          # so a rollback restarts the previous image without re-running them.
+          docker compose up -d --no-build --remove-orphans
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${HEALTH_PORT:-5000}/health" >/dev/null; then
+              echo "Health check passed after $attempt attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Health check failed — recent logs:"
+          docker compose logs --tail=60 api || true
+          exit 1
+          REMOTE
+
+      - name: Record the rollback
+        if: steps.config.outputs.enabled == 'true' && steps.resolve.outputs.tag != ''
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.tag }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          {
+            echo "### Rollback"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Image tag | \`${TARGET_TAG}\` |"
+            echo "| Triggered by | @${{ github.actor }} |"
+            echo "| Reason | ${REASON:-_not supplied_} |"
+            echo ""
+            echo "Note: \`latest\` was not moved. The next successful deploy on \`main\` returns the service to the newest image."
+          } >> "$GITHUB_STEP_SUMMARY"
